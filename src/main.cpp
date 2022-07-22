@@ -1,0 +1,123 @@
+#include <Arduino.h>
+#include <HomeSpan.h>
+
+// Pairing Code: 466-37-726
+
+const int STATUS_PIN = 2;
+const int CONTROL_PIN = 27;
+const int RELAY_PIN = 13;
+const long UNLOCK_TIME_MILLIS = 5000;
+
+const int STATE_LOCKED = 1;
+const int STATE_UNLOCKED = 0;
+
+struct DoorBuzzer : Service::LockMechanism
+{
+
+  SpanCharacteristic *currentState;
+  SpanCharacteristic *targetState;
+  int relayPin;
+  long unlockedUntilMillis = 0;
+
+  DoorBuzzer(int relayPin) : Service::LockMechanism()
+  {
+    this->currentState = new Characteristic::LockCurrentState(1, true);
+    this->targetState = new Characteristic::LockTargetState(1, true);
+    this->relayPin = relayPin;
+
+    pinMode(relayPin, OUTPUT);
+    digitalWrite(relayPin, LOW);
+  }
+
+  boolean update()
+  {
+    boolean open = targetState->getNewVal() == STATE_UNLOCKED;
+
+    if (open) {
+      unlockedUntilMillis = millis() + UNLOCK_TIME_MILLIS;
+      this->targetState->setVal(STATE_UNLOCKED);
+    } else {
+      unlockedUntilMillis = 0;
+      this->targetState->setVal(STATE_LOCKED);
+    }
+
+    return true;
+  }
+
+  void loop() {
+    boolean currentlyUnlocked = this->currentState->getVal() == STATE_UNLOCKED;
+    long currentTimeMillis = millis();
+    
+    if (unlockedUntilMillis > currentTimeMillis) {
+      if (!currentlyUnlocked) {
+        digitalWrite(relayPin, HIGH);
+        this->targetState->setVal(STATE_UNLOCKED);
+      }
+    } else {
+      if (currentlyUnlocked) {
+        digitalWrite(relayPin, LOW);
+        this->targetState->setVal(STATE_LOCKED);
+      }
+    }
+
+    boolean relayUnlocked = digitalRead(relayPin) == HIGH;
+    if (!relayUnlocked && this->currentState->getVal() == STATE_UNLOCKED) {
+      // If relay pin is locked and currentState is UNLOCKED
+      this->currentState->setVal(STATE_LOCKED);
+    } else if (relayUnlocked && this->currentState->getVal() == STATE_LOCKED) {
+      // if relay pin is unlocked and currentState is LOCKED
+      this->currentState->setVal(STATE_UNLOCKED);
+    }
+  }
+};
+
+DoorBuzzer *doorBuzzer;
+TaskHandle_t h_HK_poll;
+
+void HK_poll(void *pvParameters)
+{
+  for (;;)
+  {
+    homeSpan.poll();
+  } //loop
+} //task
+
+void setup()
+{
+  Serial.begin(115200);
+
+  homeSpan.setLogLevel(1);
+  if (STATUS_PIN > 0) homeSpan.setStatusPin(STATUS_PIN);
+  if (CONTROL_PIN > 0) homeSpan.setControlPin(CONTROL_PIN);
+  homeSpan.begin(Category::Locks);
+
+  new SpanAccessory();
+
+  new Service::AccessoryInformation();
+  new Characteristic::Name("Door Buzzer");
+  new Characteristic::Manufacturer("HomeSpan");
+  new Characteristic::SerialNumber("AK-0001");
+  new Characteristic::Model("DoorBuzzer");
+  new Characteristic::FirmwareRevision("0.9");
+  new Characteristic::Identify();
+
+  new Service::HAPProtocolInformation();
+  new Characteristic::Version("1.1.0");
+
+  doorBuzzer = new DoorBuzzer(RELAY_PIN);
+
+  xTaskCreatePinnedToCore(
+      HK_poll,    /* Task function. */
+      "HK_poll",  /* name of task. */
+      10000,      /* Stack size of task */
+      NULL,       /* parameter of the task */
+      1,          /* priority of the task */
+      &h_HK_poll, /* Task handle to keep track of created task */
+      0);         /* pin task to core 0 */
+
+  delay(1000);
+}
+
+void loop()
+{
+}
