@@ -8,79 +8,59 @@ const int CONTROL_PIN = 27;
 const int RELAY_PIN = 13;
 const long UNLOCK_TIME_MILLIS = 5000;
 
-const int STATE_LOCKED = 1;
-const int STATE_UNLOCKED = 0;
+const int STATE_SECURED = 1;
+const int STATE_UNSECURED = 0;
 
-struct DoorBuzzer : Service::LockMechanism
-{
+struct DoorBuzzer : Service::LockMechanism {
 
   SpanCharacteristic *currentState;
   SpanCharacteristic *targetState;
   int relayPin;
   long unlockedUntilMillis = 0;
+  
+  DoorBuzzer(int relayPin) : Service::LockMechanism() {
+    currentState = new Characteristic::LockCurrentState(1);
+    targetState = new Characteristic::LockTargetState(1);
+    this->relayPin=relayPin;
 
-  DoorBuzzer(int relayPin) : Service::LockMechanism()
-  {
-    this->currentState = new Characteristic::LockCurrentState(1, true);
-    this->targetState = new Characteristic::LockTargetState(1, true);
-    this->relayPin = relayPin;
-
-    pinMode(relayPin, OUTPUT);
+    pinMode(relayPin,OUTPUT);
     digitalWrite(relayPin, LOW);
   }
 
-  boolean update()
-  {
-    boolean open = targetState->getNewVal() == STATE_UNLOCKED;
-
-    if (open) {
+  boolean update() {       
+    if (targetState->getNewVal() == STATE_UNSECURED) {
       unlockedUntilMillis = millis() + UNLOCK_TIME_MILLIS;
-      this->targetState->setVal(STATE_UNLOCKED);
+
+      digitalWrite(relayPin, HIGH);
+      this->currentState->setVal(STATE_UNSECURED);
     } else {
       unlockedUntilMillis = 0;
-      this->targetState->setVal(STATE_LOCKED);
+
+      digitalWrite(relayPin, LOW);
+      this->currentState->setVal(STATE_SECURED);
     }
 
     return true;
+  
   }
 
   void loop() {
-    boolean currentlyUnlocked = this->currentState->getVal() == STATE_UNLOCKED;
     long currentTimeMillis = millis();
-    
-    if (unlockedUntilMillis > currentTimeMillis) {
-      if (!currentlyUnlocked) {
-        digitalWrite(relayPin, HIGH);
-        this->targetState->setVal(STATE_UNLOCKED);
-      }
-    } else {
-      if (currentlyUnlocked) {
-        digitalWrite(relayPin, LOW);
-        this->targetState->setVal(STATE_LOCKED);
-      }
-    }
 
     boolean relayUnlocked = digitalRead(relayPin) == HIGH;
-    if (!relayUnlocked && this->currentState->getVal() == STATE_UNLOCKED) {
-      // If relay pin is locked and currentState is UNLOCKED
-      this->currentState->setVal(STATE_LOCKED);
-    } else if (relayUnlocked && this->currentState->getVal() == STATE_LOCKED) {
-      // if relay pin is unlocked and currentState is LOCKED
-      this->currentState->setVal(STATE_UNLOCKED);
+
+    boolean shouldBeLocked = unlockedUntilMillis < currentTimeMillis;
+
+    if (shouldBeLocked && relayUnlocked) {
+      digitalWrite(relayPin, LOW);
+      this->targetState->setVal(STATE_SECURED);
+      this->currentState->setVal(STATE_SECURED);
     }
   }
 };
 
 DoorBuzzer *doorBuzzer;
 TaskHandle_t h_HK_poll;
-
-void HK_poll(void *pvParameters)
-{
-  for (;;)
-  {
-    homeSpan.poll();
-  } //loop
-} //task
 
 void setup()
 {
@@ -106,18 +86,10 @@ void setup()
 
   doorBuzzer = new DoorBuzzer(RELAY_PIN);
 
-  xTaskCreatePinnedToCore(
-      HK_poll,    /* Task function. */
-      "HK_poll",  /* name of task. */
-      10000,      /* Stack size of task */
-      NULL,       /* parameter of the task */
-      1,          /* priority of the task */
-      &h_HK_poll, /* Task handle to keep track of created task */
-      0);         /* pin task to core 0 */
-
-  delay(1000);
+  // delay(1000);
 }
 
 void loop()
 {
+    homeSpan.poll();
 }
